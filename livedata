@@ -1,0 +1,237 @@
+livedata 使用封装
+
+1.工具类的封装  
+
+public class UnPeekLiveData<T> extends ProtectedUnPeekLiveData<T> {
+    @Override
+    public void setValue(T value) {
+        super.setValue(value);
+    }
+
+    @Override
+    public void postValue(T value) {
+        super.postValue(value);
+    }
+
+    public static class Builder<T> {
+        private boolean isAllowNullValue;
+        public Builder<T> setAllowNullValue(boolean allowNullValue) {
+            this.isAllowNullValue = allowNullValue;
+            return this;
+        }
+        public UnPeekLiveData<T> create() {
+            UnPeekLiveData<T> liveData = new UnPeekLiveData<>();
+            liveData.isAllowNullValue = this.isAllowNullValue;
+            return liveData;
+        }
+    }
+}
+
+public class ProtectedUnPeekLiveData<T> extends LiveData<T> {
+
+    protected boolean isAllowNullValue;
+
+    private final ConcurrentHashMap<Integer, Boolean> observers = new ConcurrentHashMap<>();
+
+    private final ConcurrentHashMap<Integer, Integer> observerMap = new ConcurrentHashMap<>();
+
+    private final ConcurrentHashMap<Integer, Observer> foreverObservers = new ConcurrentHashMap<>();
+
+    private Observer<T> createProxyObserver(@NonNull Observer originalObserver, @NonNull Integer observeKey) {
+        return t -> {
+            if (!observers.get(observeKey)) {
+                observers.put(observeKey, true);
+                if (t != null || isAllowNullValue) {
+                    originalObserver.onChanged(t);
+                }
+            }
+        };
+    }
+
+    @Override
+    public void observe(@NonNull LifecycleOwner owner, @NonNull Observer<? super T> observer) {
+        if (owner instanceof Fragment && ((Fragment) owner).getViewLifecycleOwner() != null) {
+            owner = ((Fragment) owner).getViewLifecycleOwner();
+        }
+
+        Integer observeKey = System.identityHashCode(observer);
+        observe(observeKey, owner, observer);
+    }
+
+    @Override
+    public void observeForever(@NonNull Observer<? super T> observer) {
+        Integer observeKey = System.identityHashCode(observer);
+        observeForever(observeKey, observer);
+    }
+
+    private void observe(@NonNull Integer observeKey,
+                         @NonNull LifecycleOwner owner,
+                         @NonNull Observer<? super T> observer) {
+
+        if (observers.get(observeKey) == null) {
+            observers.put(observeKey, true);
+        }
+
+        Observer registerObserver;
+        if (observerMap.get(observeKey) == null) {
+            registerObserver = createProxyObserver(observer, observeKey);
+            observerMap.put(observeKey, System.identityHashCode(registerObserver));
+        } else {
+            Integer registerObserverStoreId = observerMap.get(observeKey);
+            registerObserver = LiveDataUtil.getObserver(this, registerObserverStoreId);
+            if (registerObserver == null) {
+                registerObserver = createProxyObserver(observer, observeKey);
+                observerMap.put(observeKey, System.identityHashCode(registerObserver));
+            }
+        }
+
+        super.observe(owner, registerObserver);
+    }
+
+    private void observeForever(@NonNull Integer observeKey, @NonNull Observer<? super T> observer) {
+
+        if (observers.get(observeKey) == null) {
+            observers.put(observeKey, true);
+        }
+
+        Observer registerObserver = foreverObservers.get(observeKey);
+        if (registerObserver == null) {
+            registerObserver = createProxyObserver(observer, observeKey);
+            foreverObservers.put(observeKey, registerObserver);
+        }
+
+        super.observeForever(registerObserver);
+    }
+
+    @Override
+    public void removeObserver(@NonNull Observer<? super T> observer) {
+        Integer observeKey = System.identityHashCode(observer);
+        Observer registerObserver = foreverObservers.remove(observeKey);
+        if (registerObserver == null && observerMap.containsKey(observeKey)) {
+            Integer registerObserverStoreId = observerMap.remove(observeKey);
+            registerObserver = LiveDataUtil.getObserver(this, registerObserverStoreId);
+        }
+
+        if (registerObserver != null) {
+            observers.remove(observeKey);
+        }
+
+        super.removeObserver(registerObserver != null ? registerObserver : observer);
+    }
+
+    @Override
+    protected void setValue(T value) {
+        if (value != null || isAllowNullValue) {
+            for (Map.Entry<Integer, Boolean> entry : observers.entrySet()) {
+                entry.setValue(false);
+            }
+            super.setValue(value);
+        }
+    }
+
+    public void clear() {
+        super.setValue(null);
+    }
+}
+
+
+public class UnPeekLiveData<T> extends ProtectedUnPeekLiveData<T> {
+
+    @Override
+    public void setValue(T value) {
+        super.setValue(value);
+    }
+
+    @Override
+    public void postValue(T value) {
+        super.postValue(value);
+    }
+
+    public static class Builder<T> {
+
+        private boolean isAllowNullValue;
+
+        public Builder<T> setAllowNullValue(boolean allowNullValue) {
+            this.isAllowNullValue = allowNullValue;
+            return this;
+        }
+
+        public UnPeekLiveData<T> create() {
+            UnPeekLiveData<T> liveData = new UnPeekLiveData<>();
+            liveData.isAllowNullValue = this.isAllowNullValue;
+            return liveData;
+        }
+    }
+}
+
+public class LiveDataUtil {
+
+    public static Observer getObserver(@NonNull LiveData liveData, @NonNull Integer identityHashCode) {
+        if (liveData == null || identityHashCode == null) {
+            return null;
+        }
+
+        try {
+            Field field = LiveData.class.getDeclaredField("mObservers");
+            field.setAccessible(true);
+            SafeIterableMap<Observer, Object> observers = (SafeIterableMap<Observer, Object>) field.get(liveData);
+            if (observers != null) {
+                for (Map.Entry<Observer, Object> entry : observers) {
+                    Observer observer = entry.getKey();
+                    if (System.identityHashCode(observer) == identityHashCode) {
+                        return observer;
+                    }
+                }
+            }
+        } catch (IllegalAccessException e) {
+            e.printStackTrace();
+        } catch (NoSuchFieldException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+}
+
+
+2.实际使用
+
+在viewmodel 中使用   
+
+class AccountAndSecurityViewModel : BaseViewModel() {
+
+    val biometricSuccess = UnPeekLiveData<Boolean>()
+    val biometricFailed = UnPeekLiveData<Boolean>()
+
+    /**
+     * 绑定生物识别
+     */
+    fun relationBiometric() {
+        BaseApp.userInfo ?:return
+        showLoading()
+        launch({
+            HomeRepo.relationBiometric()
+        }, {
+            biometricSuccess.value = true
+            if(!MMKVUtil.getBoolean(CommonConstant.MMKV_BIOMETRIC_AUTH_UPLOAD, false)){
+                MMKVUtil.saveData(CommonConstant.MMKV_BIOMETRIC_AUTH_UPLOAD, true)
+                UploadAppInfoReqUtil.uploadAppInfo("add","Success","开启生物识别授权","")
+            }
+        }, {
+            UploadAppInfoReqUtil.uploadAppInfo("add","Fail","开启生物识别授权","")
+            biometricFailed.value = false
+        }) {
+            dismissLoading()
+        }
+    }
+}
+
+在activity 中  使用观察者 
+
+mViewModel?.biometricSuccess?.observe(this) {
+            if (UserBiometricDao.openUserBiometric()) {
+               // toast 提示...
+                getString(R.string.dialog_biometric_success).toast()
+            }
+        }
+
+
